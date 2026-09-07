@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pandas as pd
-
 import lightgbm as lgb
 
 from src.models.forecast_models import (
@@ -551,6 +550,67 @@ def create_model_matrices(
 
 
 # ---------------------------------------------------------
+# Training-data orchestration
+# ---------------------------------------------------------
+
+def prepare_training_splits(
+    df: pd.DataFrame,
+    validation_days: int = FORECAST_HORIZON,
+    test_days: int = FORECAST_HORIZON,
+):
+    """
+    Prepare chronological train, validation, and test splits
+    for the production forecasting pipeline.
+
+    Training rows with incomplete lag/rolling history are removed.
+    Validation and test rows are preserved so evaluation continues
+    to represent the complete forecast horizon, including
+    unavailable product-days.
+    """
+
+    # Create leakage-safe chronological splits using unique
+    # calendar dates rather than random row-level sampling.
+    train_df, validation_df, test_df = (
+        chronological_train_validation_test_split(
+            df,
+            validation_days=validation_days,
+            test_days=test_days,
+        )
+    )
+
+    # Only training loses rows with incomplete demand-history
+    # features. Validation and test remain complete because they
+    # represent entire forecast horizons.
+    train_df = remove_incomplete_demand_history(
+        train_df
+    )
+
+    # Construct ML-ready matrices for training and validation.
+    # create_model_matrices restricts the ML portion to available
+    # product-days while the complete validation dataframe remains
+    # available separately for later end-to-end evaluation.
+    (
+        X_train,
+        y_train,
+        X_validation,
+        y_validation,
+    ) = create_model_matrices(
+        train_df,
+        validation_df,
+    )
+
+    return {
+        "train_df": train_df,
+        "validation_df": validation_df,
+        "test_df": test_df,
+        "X_train": X_train,
+        "y_train": y_train,
+        "X_validation": X_validation,
+        "y_validation": y_validation,
+    }
+
+
+# ---------------------------------------------------------
 # Model fitting
 # ---------------------------------------------------------
 
@@ -599,8 +659,8 @@ def fit_poisson_regressor(
     model = create_poisson_regressor()
 
     # LightGBM 4.7 deprecates eval_set in favor of eval_X and
-    # eval_y, so use the current API to avoid deprecation
-    # warnings in the production training pipeline.
+    # eval_y, so use the current API to avoid deprecation warnings
+    # in the production training pipeline.
     model.fit(
         X_train,
         y_train,
@@ -615,6 +675,8 @@ def fit_poisson_regressor(
         ],
     )
 
+    # Return the fitted model so downstream forecasting functions
+    # can generate non-negative demand predictions.
     return model
 
 
@@ -689,4 +751,6 @@ def fit_demand_classifier(
         ],
     )
 
+    # Return the fitted classifier so downstream code can generate
+    # positive-demand probabilities.
     return model

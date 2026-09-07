@@ -12,6 +12,7 @@ from src.models.train import (
     encode_event_missingness,
     fit_demand_classifier,
     fit_poisson_regressor,
+    prepare_training_splits,
     remove_incomplete_demand_history,
     select_available_observations,
     validate_training_columns,
@@ -636,3 +637,73 @@ def test_fit_demand_classifier_rejects_invalid_early_stopping():
             y_validation,
             early_stopping_rounds=0,
         )
+
+def test_prepare_training_splits_preserves_holdout_windows():
+    """
+    Confirm that orchestration removes incomplete history only
+    from training while preserving the full validation and test
+    forecast windows.
+    """
+
+# Build 100 consecutive daily observations so the chronological
+# split has enough history for train, validation, and test windows.
+    df = make_engineered_dataset(
+    	periods=100
+   )
+    # Simulate structurally missing demand-history features at the
+    # beginning of the series, as occurs with long lag features.
+    df.loc[
+        df.index[:10],
+        DEMAND_HISTORY_FEATURES,
+    ] = pd.NA
+
+    result = prepare_training_splits(
+        df,
+        validation_days=28,
+        test_days=28,
+    )
+
+    # Chronological splitting on 100 unique dates gives:
+    # 44 training days, 28 validation days, and 28 test days.
+    # Ten incomplete-history training rows are then removed.
+    assert len(
+        result["train_df"]
+    ) == 34
+
+    assert len(
+        result["validation_df"]
+    ) == 28
+
+    assert len(
+        result["test_df"]
+    ) == 28
+
+    # The ML matrices use only available observations.
+    # make_engineered_dataset currently marks all rows available,
+    # so their sizes should match their prepared source splits.
+    assert len(
+        result["X_train"]
+    ) == 34
+
+    assert len(
+        result["y_train"]
+    ) == 34
+
+    assert len(
+        result["X_validation"]
+    ) == 28
+
+    assert len(
+        result["y_validation"]
+    ) == 28
+
+    # The orchestration result should preserve the exact production
+    # feature contract used by the LightGBM models.
+    assert list(
+        result["X_train"].columns
+    ) == MODEL_FEATURES
+
+    assert list(
+        result["X_validation"].columns
+    ) == MODEL_FEATURES
+
