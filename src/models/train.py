@@ -2,6 +2,14 @@ from __future__ import annotations
 
 import pandas as pd
 
+import lightgbm as lgb
+
+from src.models.forecast_models import (
+    create_demand_classifier,
+    create_poisson_regressor,
+    create_positive_demand_target,
+)
+
 
 # ---------------------------------------------------------
 # Forecasting configuration
@@ -540,3 +548,145 @@ def create_model_matrices(
         X_evaluation,
         y_evaluation,
     )
+
+
+# ---------------------------------------------------------
+# Model fitting
+# ---------------------------------------------------------
+
+def fit_poisson_regressor(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    X_validation: pd.DataFrame,
+    y_validation: pd.Series,
+    early_stopping_rounds: int = 50,
+):
+    """
+    Fit the LightGBM Poisson demand model.
+
+    Validation data is used only for early stopping. The model
+    configuration itself comes from forecast_models.py so model
+    parameters remain defined in one place.
+    """
+
+    if early_stopping_rounds <= 0:
+        raise ValueError(
+            "early_stopping_rounds must be greater than zero."
+        )
+
+    if len(X_train) != len(y_train):
+        raise ValueError(
+            "X_train and y_train must contain the same number "
+            "of observations."
+        )
+
+    if len(X_validation) != len(y_validation):
+        raise ValueError(
+            "X_validation and y_validation must contain the "
+            "same number of observations."
+        )
+
+    if X_train.empty:
+        raise ValueError(
+            "Training feature matrix is empty."
+        )
+
+    if X_validation.empty:
+        raise ValueError(
+            "Validation feature matrix is empty."
+        )
+
+    model = create_poisson_regressor()
+
+    # LightGBM 4.7 deprecates eval_set in favor of eval_X and
+    # eval_y, so use the current API to avoid deprecation
+    # warnings in the production training pipeline.
+    model.fit(
+        X_train,
+        y_train,
+        eval_X=X_validation,
+        eval_y=y_validation,
+        eval_metric="l1",
+        callbacks=[
+            lgb.early_stopping(
+                stopping_rounds=early_stopping_rounds,
+                verbose=False,
+            ),
+        ],
+    )
+
+    return model
+
+
+def fit_demand_classifier(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    X_validation: pd.DataFrame,
+    y_validation: pd.Series,
+    early_stopping_rounds: int = 50,
+):
+    """
+    Fit the binary LightGBM demand-occurrence classifier.
+
+    The classifier predicts whether sales are greater than zero.
+    Its output is later combined with the Poisson demand forecast
+    by the two-stage forecasting rule.
+    """
+
+    if early_stopping_rounds <= 0:
+        raise ValueError(
+            "early_stopping_rounds must be greater than zero."
+        )
+
+    if len(X_train) != len(y_train):
+        raise ValueError(
+            "X_train and y_train must contain the same number "
+            "of observations."
+        )
+
+    if len(X_validation) != len(y_validation):
+        raise ValueError(
+            "X_validation and y_validation must contain the "
+            "same number of observations."
+        )
+
+    if X_train.empty:
+        raise ValueError(
+            "Training feature matrix is empty."
+        )
+
+    if X_validation.empty:
+        raise ValueError(
+            "Validation feature matrix is empty."
+        )
+
+    # Convert unit sales into the binary target used by the
+    # occurrence classifier:
+    #
+    # 0 = zero demand
+    # 1 = positive demand
+    y_train_binary = create_positive_demand_target(
+        y_train
+    )
+
+    y_validation_binary = create_positive_demand_target(
+        y_validation
+    )
+
+    model = create_demand_classifier()
+
+    model.fit(
+        X_train,
+        y_train_binary,
+        eval_X=X_validation,
+        eval_y=y_validation_binary,
+        eval_metric="binary_logloss",
+        callbacks=[
+            lgb.early_stopping(
+                stopping_rounds=early_stopping_rounds,
+                verbose=False,
+            ),
+        ],
+    )
+
+    return model

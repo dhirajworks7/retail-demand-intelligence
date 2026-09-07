@@ -10,6 +10,8 @@ from src.models.train import (
     chronological_train_validation_test_split,
     create_model_matrices,
     encode_event_missingness,
+    fit_demand_classifier,
+    fit_poisson_regressor,
     remove_incomplete_demand_history,
     select_available_observations,
     validate_training_columns,
@@ -449,3 +451,188 @@ def test_create_model_matrices_uses_model_feature_contract():
     # Availability is handled outside the ML model, so it
     # must not appear among the model predictors.
     assert "is_available" not in X_train.columns
+
+def make_lightgbm_test_data():
+    """
+    Create a small deterministic dataset for testing the
+    production LightGBM fitting functions.
+
+    The dataset is intentionally small so the unit tests remain
+    fast while still exercising real model fitting.
+    """
+
+    import numpy as np
+
+    rng = np.random.default_rng(
+        seed=42
+    )
+
+    n_train = 120
+    n_validation = 40
+
+    def make_features(
+        n_rows: int,
+    ) -> pd.DataFrame:
+        features = pd.DataFrame(
+            index=range(n_rows)
+        )
+
+        for feature in MODEL_FEATURES:
+            if feature in CATEGORICAL_FEATURES:
+                # Both training and validation use the same
+                # categorical vocabulary.
+                features[feature] = pd.Categorical(
+                    np.where(
+                        np.arange(n_rows) % 2 == 0,
+                        "A",
+                        "B",
+                    ),
+                    categories=[
+                        "A",
+                        "B",
+                    ],
+                )
+            else:
+                features[feature] = rng.normal(
+                    loc=1.0,
+                    scale=0.5,
+                    size=n_rows,
+                )
+
+        return features
+
+    X_train = make_features(
+        n_train
+    )
+
+    X_validation = make_features(
+        n_validation
+    )
+
+    # Use count-valued targets containing both zeros and
+    # positive demand observations.
+    y_train = pd.Series(
+        rng.poisson(
+            lam=1.5,
+            size=n_train,
+        ),
+        name="sales",
+    )
+
+    y_validation = pd.Series(
+        rng.poisson(
+            lam=1.5,
+            size=n_validation,
+        ),
+        name="sales",
+    )
+
+    return (
+        X_train,
+        y_train,
+        X_validation,
+        y_validation,
+    )
+
+
+def test_fit_poisson_regressor_can_predict():
+    (
+        X_train,
+        y_train,
+        X_validation,
+        y_validation,
+    ) = make_lightgbm_test_data()
+
+    model = fit_poisson_regressor(
+        X_train,
+        y_train,
+        X_validation,
+        y_validation,
+        early_stopping_rounds=5,
+    )
+
+    predictions = model.predict(
+        X_validation
+    )
+
+    assert len(predictions) == len(
+        X_validation
+    )
+
+    # Poisson demand predictions should never be negative.
+    assert (predictions >= 0).all()
+
+    assert model.best_iteration_ > 0
+
+
+def test_fit_demand_classifier_can_predict_probabilities():
+    (
+        X_train,
+        y_train,
+        X_validation,
+        y_validation,
+    ) = make_lightgbm_test_data()
+
+    model = fit_demand_classifier(
+        X_train,
+        y_train,
+        X_validation,
+        y_validation,
+        early_stopping_rounds=5,
+    )
+
+    probabilities = model.predict_proba(
+        X_validation
+    )[:, 1]
+
+    assert len(probabilities) == len(
+        X_validation
+    )
+
+    # Binary-classification probabilities must remain within
+    # their mathematical [0, 1] range.
+    assert (
+        (probabilities >= 0)
+        & (probabilities <= 1)
+    ).all()
+
+    assert model.best_iteration_ > 0
+
+
+def test_fit_poisson_regressor_rejects_mismatched_training_rows():
+    (
+        X_train,
+        y_train,
+        X_validation,
+        y_validation,
+    ) = make_lightgbm_test_data()
+
+    # Remove one target observation so X and y no longer have
+    # matching row counts.
+    y_train = y_train.iloc[:-1]
+
+    with pytest.raises(ValueError):
+        fit_poisson_regressor(
+            X_train,
+            y_train,
+            X_validation,
+            y_validation,
+        )
+
+
+def test_fit_demand_classifier_rejects_invalid_early_stopping():
+    (
+        X_train,
+        y_train,
+        X_validation,
+        y_validation,
+    ) = make_lightgbm_test_data()
+
+    with pytest.raises(ValueError):
+        fit_demand_classifier(
+            X_train,
+            y_train,
+            X_validation,
+            y_validation,
+            early_stopping_rounds=0,
+        )
