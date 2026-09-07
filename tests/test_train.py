@@ -9,6 +9,7 @@ from src.models.train import (
     align_categorical_features,
     chronological_train_validation_test_split,
     create_model_matrices,
+    create_validation_forecasts,
     encode_event_missingness,
     fit_demand_classifier,
     fit_poisson_regressor,
@@ -707,3 +708,151 @@ def test_prepare_training_splits_preserves_holdout_windows():
         result["X_validation"].columns
     ) == MODEL_FEATURES
 
+class MockPoissonModel:
+    """
+    Deterministic stand-in for the production Poisson model.
+
+    It returns a simple sequence so we can verify that predictions
+    are mapped back to the correct validation dataframe indices.
+    """
+
+    def predict(
+        self,
+        X: pd.DataFrame,
+    ):
+        return [
+            float(index + 1)
+            for index in range(len(X))
+        ]
+
+
+class MockClassifierModel:
+    """
+    Deterministic stand-in for the positive-demand classifier.
+
+    The first available row is below the 0.50 gate and the second
+    is above it, allowing the test to exercise both branches of
+    the two-stage rule.
+    """
+
+    def predict_proba(
+        self,
+        X: pd.DataFrame,
+    ):
+        import numpy as np
+
+        positive_probability = np.array(
+            [
+                0.40,
+                0.80,
+            ][:len(X)],
+            dtype=float,
+        )
+
+        return np.column_stack(
+            [
+                1.0 - positive_probability,
+                positive_probability,
+            ]
+        )
+
+
+def test_create_validation_forecasts_restores_unavailable_rows():
+    """
+    Confirm that ML predictions are assigned only to available
+    observations and unavailable rows remain deterministic zeros.
+    """
+
+    validation_df = make_engineered_dataset(
+        periods=3
+    )
+
+    # Row 1 is unavailable and therefore must never receive an
+    # ML forecast.
+    validation_df["is_available"] = [
+        1,
+        0,
+        1,
+    ]
+
+    # create_validation_forecasts relies on original dataframe
+    # indices to map available predictions back to the full split.
+    X_validation = validation_df.loc[
+        validation_df["is_available"] == 1,
+        MODEL_FEATURES,
+    ].copy()
+
+    forecasts = create_validation_forecasts(
+        validation_df=validation_df,
+        X_validation=X_validation,
+        poisson_model=MockPoissonModel(),
+        classifier_model=MockClassifierModel(),
+        threshold=0.50,
+    )
+
+    assert len(
+        forecasts
+    ) == 3
+
+    # Available row 0 receives Poisson prediction 1.0, but its
+    # positive-demand probability is below 0.50, so two-stage
+    # prediction becomes zero.
+    assert forecasts.loc[
+        0,
+        "poisson_prediction",
+    ] == pytest.approx(
+        1.0
+    )
+
+    assert forecasts.loc[
+        0,
+        "two_stage_prediction",
+    ] == pytest.approx(
+        0.0
+    )
+
+    # Unavailable row 1 must remain zero for both forecasting
+    # approaches and should not receive an ML probability.
+    assert forecasts.loc[
+        1,
+        "poisson_prediction",
+    ] == pytest.approx(
+        0.0
+    )
+
+    assert forecasts.loc[
+        1,
+        "positive_demand_probability",
+    ] == pytest.approx(
+        0.0
+    )
+
+    assert forecasts.loc[
+        1,
+        "two_stage_prediction",
+    ] == pytest.approx(
+        0.0
+    )
+
+    # Available row 2 receives the second ML prediction and passes
+    # the classifier gate because its probability is 0.80.
+    assert forecasts.loc[
+        2,
+        "poisson_prediction",
+    ] == pytest.approx(
+        2.0
+    )
+
+    assert forecasts.loc[
+        2,
+        "positive_demand_probability",
+    ] == pytest.approx(
+        0.80
+    )
+
+    assert forecasts.loc[
+        2,
+        "two_stage_prediction",
+    ] == pytest.approx(
+        2.0
+    )

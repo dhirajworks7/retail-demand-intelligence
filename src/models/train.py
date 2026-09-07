@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-import pandas as pd
 import lightgbm as lgb
+import pandas as pd
 
 from src.models.forecast_models import (
+    DEFAULT_DEMAND_THRESHOLD,
     create_demand_classifier,
     create_poisson_regressor,
     create_positive_demand_target,
+    predict_poisson_demand,
+    predict_positive_demand_probability,
+    two_stage_forecast,
 )
 
 
@@ -174,8 +178,8 @@ def chronological_train_validation_test_split(
 
     result = df.copy()
 
-    # Normalize the date column so chronological comparisons
-    # behave consistently even when input dates are strings.
+    # Normalize dates so chronological comparisons behave
+    # consistently even if input dates are strings.
     result[DATE_COLUMN] = pd.to_datetime(
         result[DATE_COLUMN]
     )
@@ -267,7 +271,7 @@ def remove_incomplete_demand_history(
 
     Early observations for each product cannot have long-lag
     features such as sales_lag_56. Those rows are structurally
-    incomplete and are therefore unsuitable for model training.
+    incomplete and therefore unsuitable for model training.
     """
 
     missing_columns = (
@@ -418,8 +422,7 @@ def align_categorical_features(
                 f"feature: {column}"
             )
 
-        # Establish training categories first. These categories
-        # become the vocabulary available to the fitted model.
+        # Establish the categorical vocabulary from training.
         train_result[column] = (
             train_result[column]
             .astype("category")
@@ -431,19 +434,14 @@ def align_categorical_features(
             .categories
         )
 
-        # Convert evaluation/test values to object so we can
-        # explicitly detect categories that were never observed
-        # during training.
+        # Convert evaluation/test values through object so unseen
+        # values can be explicitly detected and replaced.
         other_values = (
             other_result[column]
             .astype("object")
             .copy()
         )
 
-        # Any category unseen during training is represented as
-        # missing. This keeps category codes compatible across
-        # train, validation, and test data and avoids deprecated
-        # pandas categorical casting behavior.
         unseen_mask = (
             other_values.notna()
             & ~other_values.isin(
@@ -451,6 +449,8 @@ def align_categorical_features(
             )
         )
 
+        # Unseen categories become missing values rather than
+        # receiving incompatible category codes.
         other_values.loc[
             unseen_mask
         ] = None
@@ -563,13 +563,11 @@ def prepare_training_splits(
     for the production forecasting pipeline.
 
     Training rows with incomplete lag/rolling history are removed.
-    Validation and test rows are preserved so evaluation continues
-    to represent the complete forecast horizon, including
-    unavailable product-days.
+    Validation and test rows remain complete so evaluation still
+    represents the full forecast horizon.
     """
 
-    # Create leakage-safe chronological splits using unique
-    # calendar dates rather than random row-level sampling.
+    # Create leakage-safe chronological partitions.
     train_df, validation_df, test_df = (
         chronological_train_validation_test_split(
             df,
@@ -578,17 +576,13 @@ def prepare_training_splits(
         )
     )
 
-    # Only training loses rows with incomplete demand-history
-    # features. Validation and test remain complete because they
-    # represent entire forecast horizons.
+    # Only training rows with complete demand history are eligible
+    # for model fitting.
     train_df = remove_incomplete_demand_history(
         train_df
     )
 
-    # Construct ML-ready matrices for training and validation.
-    # create_model_matrices restricts the ML portion to available
-    # product-days while the complete validation dataframe remains
-    # available separately for later end-to-end evaluation.
+    # Build ML-ready matrices for training and validation.
     (
         X_train,
         y_train,
@@ -658,9 +652,7 @@ def fit_poisson_regressor(
 
     model = create_poisson_regressor()
 
-    # LightGBM 4.7 deprecates eval_set in favor of eval_X and
-    # eval_y, so use the current API to avoid deprecation warnings
-    # in the production training pipeline.
+    # Use the current LightGBM validation API with early stopping.
     model.fit(
         X_train,
         y_train,
@@ -675,8 +667,6 @@ def fit_poisson_regressor(
         ],
     )
 
-    # Return the fitted model so downstream forecasting functions
-    # can generate non-negative demand predictions.
     return model
 
 
@@ -691,8 +681,8 @@ def fit_demand_classifier(
     Fit the binary LightGBM demand-occurrence classifier.
 
     The classifier predicts whether sales are greater than zero.
-    Its output is later combined with the Poisson demand forecast
-    by the two-stage forecasting rule.
+    Its probability output is later combined with the Poisson
+    magnitude forecast by the two-stage forecasting rule.
     """
 
     if early_stopping_rounds <= 0:
@@ -722,9 +712,7 @@ def fit_demand_classifier(
             "Validation feature matrix is empty."
         )
 
-    # Convert unit sales into the binary target used by the
-    # occurrence classifier:
-    #
+    # Convert count-valued sales into the binary occurrence target:
     # 0 = zero demand
     # 1 = positive demand
     y_train_binary = create_positive_demand_target(
@@ -751,6 +739,115 @@ def fit_demand_classifier(
         ],
     )
 
-    # Return the fitted classifier so downstream code can generate
-    # positive-demand probabilities.
+    # Critical: return the fitted classifier so downstream code
+    # receives a real model rather than None.
     return model
+
+
+# ---------------------------------------------------------
+# Full-split forecasting
+# ---------------------------------------------------------
+
+def create_validation_forecasts(
+    validation_df: pd.DataFrame,
+    X_validation: pd.DataFrame,
+    poisson_model,
+    classifier_model,
+    threshold: float = DEFAULT_DEMAND_THRESHOLD,
+) -> pd.DataFrame:
+    """
+    Generate Poisson and two-stage forecasts for the complete
+    validation horizon.
+
+    ML models predict only available product-days. Unavailable
+    rows are restored afterward with a deterministic forecast
+    of zero demand.
+    """
+
+    validate_training_columns(
+        validation_df
+    )
+
+    if X_validation.empty:
+        raise ValueError(
+            "Validation feature matrix is empty."
+        )
+
+    # X_validation preserves original dataframe indices after
+    # availability filtering. These indices map model predictions
+    # back to the complete validation horizon.
+    available_indices = X_validation.index
+
+    if not available_indices.isin(
+        validation_df.index
+    ).all():
+        raise ValueError(
+            "X_validation contains indices that are not present "
+            "in validation_df."
+        )
+
+    # The ML matrix must contain available product-days only.
+    if not (
+        validation_df.loc[
+            available_indices,
+            "is_available",
+        ] == 1
+    ).all():
+        raise ValueError(
+            "X_validation contains unavailable observations."
+        )
+
+    # Predict demand magnitude from the Poisson model.
+    poisson_available = predict_poisson_demand(
+        poisson_model,
+        X_validation,
+    )
+
+    # Predict the probability that demand is greater than zero.
+    positive_probability = (
+        predict_positive_demand_probability(
+            classifier_model,
+            X_validation,
+        )
+    )
+
+    # Apply the frozen two-stage gating threshold.
+    two_stage_available = two_stage_forecast(
+        positive_probability,
+        poisson_available,
+        threshold=threshold,
+    )
+
+    # Begin with the entire validation horizon. Zero initialization
+    # automatically implements the deterministic unavailable-item
+    # business rule.
+    forecasts = validation_df[
+        [
+            DATE_COLUMN,
+            "item_id",
+            TARGET_COLUMN,
+            "is_available",
+        ]
+    ].copy()
+
+    forecasts["poisson_prediction"] = 0.0
+    forecasts["positive_demand_probability"] = 0.0
+    forecasts["two_stage_prediction"] = 0.0
+
+    # Map available-row predictions back using original indices.
+    forecasts.loc[
+        available_indices,
+        "poisson_prediction",
+    ] = poisson_available
+
+    forecasts.loc[
+        available_indices,
+        "positive_demand_probability",
+    ] = positive_probability
+
+    forecasts.loc[
+        available_indices,
+        "two_stage_prediction",
+    ] = two_stage_available
+
+    return forecasts
