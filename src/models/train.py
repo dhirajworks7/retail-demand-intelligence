@@ -3,6 +3,10 @@ from __future__ import annotations
 import lightgbm as lgb
 import pandas as pd
 
+from src.evaluation.metrics import (
+    calculate_forecast_metrics,
+)
+
 from src.models.forecast_models import (
     DEFAULT_DEMAND_THRESHOLD,
     create_demand_classifier,
@@ -851,3 +855,66 @@ def create_validation_forecasts(
     ] = two_stage_available
 
     return forecasts
+
+# ---------------------------------------------------------
+# Forecast evaluation
+# ---------------------------------------------------------
+
+def evaluate_validation_forecasts(
+    forecasts: pd.DataFrame,
+) -> dict[str, dict[str, float]]:
+    """
+    Evaluate the Poisson and two-stage forecasts on the complete
+    validation horizon.
+
+    Metrics are calculated on all validation rows, including
+    unavailable product-days that receive deterministic zero
+    forecasts.
+    """
+
+    required_columns = {
+        TARGET_COLUMN,
+        "poisson_prediction",
+        "two_stage_prediction",
+    }
+
+    missing_columns = (
+        required_columns
+        - set(forecasts.columns)
+    )
+
+    if missing_columns:
+        missing_list = ", ".join(
+            sorted(missing_columns)
+        )
+
+        raise ValueError(
+            "Forecast dataframe is missing required evaluation "
+            f"columns: {missing_list}"
+        )
+
+    if forecasts.empty:
+        raise ValueError(
+            "Forecast dataframe is empty."
+        )
+
+    actual = forecasts[
+        TARGET_COLUMN
+    ]
+
+    # Evaluate the standalone Poisson demand model.
+    poisson_metrics = calculate_forecast_metrics(
+        actual,
+        forecasts["poisson_prediction"],
+    )
+
+    # Evaluate the gated two-stage forecast.
+    two_stage_metrics = calculate_forecast_metrics(
+        actual,
+        forecasts["two_stage_prediction"],
+    )
+
+    return {
+        "poisson": poisson_metrics,
+        "two_stage": two_stage_metrics,
+    }

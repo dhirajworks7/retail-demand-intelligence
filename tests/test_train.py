@@ -11,6 +11,7 @@ from src.models.train import (
     create_model_matrices,
     create_validation_forecasts,
     encode_event_missingness,
+    evaluate_validation_forecasts,
     fit_demand_classifier,
     fit_poisson_regressor,
     prepare_training_splits,
@@ -856,3 +857,106 @@ def test_create_validation_forecasts_restores_unavailable_rows():
     ] == pytest.approx(
         2.0
     )
+
+def test_evaluate_validation_forecasts_returns_expected_metrics():
+    """
+    Confirm that validation evaluation calculates metrics for both
+    the standalone Poisson and two-stage forecasting approaches.
+    """
+
+    forecasts = pd.DataFrame({
+        "sales": [
+            10.0,
+            0.0,
+            5.0,
+            8.0,
+        ],
+        "poisson_prediction": [
+            8.0,
+            1.0,
+            6.0,
+            8.0,
+        ],
+        "two_stage_prediction": [
+            9.0,
+            0.0,
+            4.0,
+            8.0,
+        ],
+    })
+
+    metrics = evaluate_validation_forecasts(
+        forecasts
+    )
+
+    # Both production forecasting approaches should receive
+    # their own complete metric dictionary.
+    assert set(metrics.keys()) == {
+        "poisson",
+        "two_stage",
+    }
+
+    expected_metric_names = {
+        "MAE",
+        "RMSE",
+        "WMAPE",
+        "Bias (%)",
+    }
+
+    assert set(
+        metrics["poisson"].keys()
+    ) == expected_metric_names
+
+    assert set(
+        metrics["two_stage"].keys()
+    ) == expected_metric_names
+
+    # For the Poisson predictions:
+    # absolute errors = [2, 1, 1, 0], so MAE = 1.
+    assert metrics["poisson"]["MAE"] == pytest.approx(
+        1.0
+    )
+
+    # For the two-stage predictions:
+    # absolute errors = [1, 0, 1, 0], so MAE = 0.5.
+    assert metrics["two_stage"]["MAE"] == pytest.approx(
+        0.5
+    )
+
+    # Total actual demand is 23. Two-stage absolute error is 2,
+    # therefore WMAPE = 2 / 23.
+    assert metrics["two_stage"]["WMAPE"] == pytest.approx(
+        2.0 / 23.0
+    )
+
+    # Two-stage predictions sum to 21 versus actual demand of 23,
+    # giving aggregate forecast bias of -2 / 23 * 100.
+    assert metrics["two_stage"]["Bias (%)"] == pytest.approx(
+        (-2.0 / 23.0) * 100.0
+    )
+
+
+def test_evaluate_validation_forecasts_rejects_missing_predictions():
+    """
+    Evaluation should fail clearly if a required prediction column
+    is absent rather than silently producing incomplete results.
+    """
+
+    forecasts = pd.DataFrame({
+        "sales": [
+            1.0,
+            2.0,
+        ],
+        "poisson_prediction": [
+            1.0,
+            2.0,
+        ],
+    })
+
+    with pytest.raises(
+        ValueError,
+        match="missing required evaluation columns",
+    ):
+        evaluate_validation_forecasts(
+            forecasts
+        )
