@@ -26,3 +26,7 @@ data/processed/*
 !data/raw/.gitkeep
 !data/interim/.gitkeep
 !data/processed/.gitkeep
+
+# Trained model artifacts are generated locally and can be large.
+# Keep the directory structure local rather than versioning model binaries.
+artifacts/models/*
