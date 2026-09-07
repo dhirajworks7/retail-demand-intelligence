@@ -1,13 +1,19 @@
 import pandas as pd
 import pytest
 
+
 from src.models.train import (
     CATEGORICAL_FEATURES,
+    DEMAND_HISTORY_FEATURES,
     MODEL_FEATURES,
+    align_categorical_features,
     chronological_train_validation_test_split,
+    create_model_matrices,
+    encode_event_missingness,
+    remove_incomplete_demand_history,
+    select_available_observations,
     validate_training_columns,
 )
-
 
 def make_engineered_dataset(
     periods: int = 70,
@@ -243,3 +249,203 @@ def test_chronological_split_rejects_insufficient_history():
             validation_days=28,
             test_days=28,
         )
+
+def test_remove_incomplete_demand_history_drops_missing_rows():
+    df = make_engineered_dataset(
+        periods=70
+    )
+
+    # Simulate structural lag unavailability at the beginning
+    # of a product history.
+    df.loc[
+        df.index[:5],
+        "sales_lag_56",
+    ] = None
+
+    result = remove_incomplete_demand_history(
+        df
+    )
+
+    assert len(result) == 65
+
+    assert result[
+        DEMAND_HISTORY_FEATURES
+    ].isna().sum().sum() == 0
+
+
+def test_remove_incomplete_demand_history_rejects_missing_feature():
+    df = make_engineered_dataset()
+
+    df = df.drop(
+        columns=["sales_lag_56"]
+    )
+
+    with pytest.raises(ValueError):
+        remove_incomplete_demand_history(
+            df
+        )
+
+
+def test_select_available_observations_filters_unavailable_rows():
+    df = make_engineered_dataset(
+        periods=10
+    )
+
+    df.loc[
+        df.index[:3],
+        "is_available",
+    ] = 0
+
+    result = select_available_observations(
+        df
+    )
+
+    assert len(result) == 7
+    assert result["is_available"].eq(1).all()
+
+
+def test_select_available_observations_rejects_missing_column():
+    df = make_engineered_dataset()
+
+    df = df.drop(
+        columns=["is_available"]
+    )
+
+    with pytest.raises(ValueError):
+        select_available_observations(
+            df
+        )
+
+
+def test_encode_event_missingness_uses_noevent_category():
+    df = make_engineered_dataset(
+        periods=5
+    )
+
+    df["event_name_1"] = None
+    df["event_type_1"] = None
+
+    result = encode_event_missingness(
+        df
+    )
+
+    assert result[
+        "event_name_1"
+    ].astype("string").eq(
+        "NoEvent"
+    ).all()
+
+    assert result[
+        "event_type_1"
+    ].astype("string").eq(
+        "NoEvent"
+    ).all()
+
+    assert (
+        "NoEvent"
+        in result["event_name_1"].cat.categories
+    )
+
+
+def test_align_categorical_features_uses_training_categories():
+    train_df = make_engineered_dataset(
+        periods=5
+    )
+
+    evaluation_df = make_engineered_dataset(
+        periods=3
+    )
+
+    train_df["item_id"] = [
+        "ITEM_A",
+        "ITEM_A",
+        "ITEM_B",
+        "ITEM_B",
+        "ITEM_A",
+    ]
+
+    # ITEM_C is intentionally unseen in training.
+    evaluation_df["item_id"] = [
+        "ITEM_A",
+        "ITEM_C",
+        "ITEM_B",
+    ]
+
+    train_result, evaluation_result = (
+        align_categorical_features(
+            train_df,
+            evaluation_df,
+        )
+    )
+
+    assert set(
+        train_result["item_id"].cat.categories
+    ) == {
+        "ITEM_A",
+        "ITEM_B",
+    }
+
+    # Unseen evaluation categories should become missing rather
+    # than creating incompatible category codes.
+    assert pd.isna(
+        evaluation_result.loc[
+            evaluation_result.index[1],
+            "item_id",
+        ]
+    )
+
+
+def test_create_model_matrices_excludes_unavailable_rows():
+    train_df = make_engineered_dataset(
+        periods=20
+    )
+
+    evaluation_df = make_engineered_dataset(
+        periods=10
+    )
+
+    train_df.loc[
+        train_df.index[:4],
+        "is_available",
+    ] = 0
+
+    evaluation_df.loc[
+        evaluation_df.index[:2],
+        "is_available",
+    ] = 0
+
+    X_train, y_train, X_eval, y_eval = (
+        create_model_matrices(
+            train_df,
+            evaluation_df,
+        )
+    )
+
+    assert len(X_train) == 16
+    assert len(y_train) == 16
+    assert len(X_eval) == 8
+    assert len(y_eval) == 8
+
+
+def test_create_model_matrices_uses_model_feature_contract():
+    train_df = make_engineered_dataset(
+        periods=20
+    )
+
+    evaluation_df = make_engineered_dataset(
+        periods=10
+    )
+
+    X_train, _, X_eval, _ = (
+        create_model_matrices(
+            train_df,
+            evaluation_df,
+        )
+    )
+
+    assert X_train.columns.tolist() == MODEL_FEATURES
+    assert X_eval.columns.tolist() == MODEL_FEATURES
+
+    # Availability is handled outside the ML model, so it
+    # must not appear among the model predictors.
+    assert "is_available" not in X_train.columns
