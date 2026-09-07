@@ -918,3 +918,90 @@ def evaluate_validation_forecasts(
         "poisson": poisson_metrics,
         "two_stage": two_stage_metrics,
     }
+
+# ---------------------------------------------------------
+# End-to-end training and validation orchestration
+# ---------------------------------------------------------
+
+def train_and_validate(
+    df: pd.DataFrame,
+    validation_days: int = FORECAST_HORIZON,
+    test_days: int = FORECAST_HORIZON,
+    threshold: float = DEFAULT_DEMAND_THRESHOLD,
+    early_stopping_rounds: int = 50,
+) -> dict[str, object]:
+    """
+    Run the complete production training and validation workflow.
+
+    The untouched test split is preserved but is not evaluated here.
+    This prevents the test horizon from becoming part of routine
+    model selection or threshold tuning.
+
+    Workflow:
+        1. Create chronological train/validation/test splits.
+        2. Remove incomplete demand history from training only.
+        3. Build leakage-safe model matrices.
+        4. Fit the Poisson demand regressor.
+        5. Fit the positive-demand classifier.
+        6. Assemble forecasts across the full validation horizon.
+        7. Calculate validation metrics for both model strategies.
+
+    Returns
+    -------
+    dict
+        Trained models, validation forecasts, evaluation metrics,
+        and the chronological data splits required for later use.
+    """
+
+    # Prepare chronological splits and ML-ready matrices using the
+    # existing production feature contract.
+    prepared = prepare_training_splits(
+        df,
+        validation_days=validation_days,
+        test_days=test_days,
+    )
+
+    # Train the standalone demand magnitude model.
+    poisson_model = fit_poisson_regressor(
+        prepared["X_train"],
+        prepared["y_train"],
+        prepared["X_validation"],
+        prepared["y_validation"],
+        early_stopping_rounds=early_stopping_rounds,
+    )
+
+    # Train the classifier that estimates whether demand will be
+    # positive on an available item-day.
+    classifier_model = fit_demand_classifier(
+        prepared["X_train"],
+        prepared["y_train"],
+        prepared["X_validation"],
+        prepared["y_validation"],
+        early_stopping_rounds=early_stopping_rounds,
+    )
+
+    # Reconstruct predictions for the complete validation horizon.
+    # Unavailable product-days bypass ML and remain deterministic zero.
+    validation_forecasts = create_validation_forecasts(
+        prepared["validation_df"],
+        prepared["X_validation"],
+        poisson_model,
+        classifier_model,
+        threshold=threshold,
+    )
+
+    # Use the shared evaluation module so training orchestration does
+    # not duplicate metric definitions.
+    validation_metrics = evaluate_validation_forecasts(
+        validation_forecasts
+    )
+
+    return {
+        "poisson_model": poisson_model,
+        "classifier_model": classifier_model,
+        "validation_forecasts": validation_forecasts,
+        "validation_metrics": validation_metrics,
+        "train_df": prepared["train_df"],
+        "validation_df": prepared["validation_df"],
+        "test_df": prepared["test_df"],
+    }

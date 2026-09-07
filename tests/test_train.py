@@ -17,6 +17,7 @@ from src.models.train import (
     prepare_training_splits,
     remove_incomplete_demand_history,
     select_available_observations,
+    train_and_validate,
     validate_training_columns,
 )
 
@@ -960,3 +961,141 @@ def test_evaluate_validation_forecasts_rejects_missing_predictions():
         evaluate_validation_forecasts(
             forecasts
         )
+
+def test_train_and_validate_runs_complete_workflow(monkeypatch):
+    """
+    Confirm that the high-level orchestration connects splitting,
+    model fitting, forecast assembly, and evaluation correctly.
+
+    Model fitting is mocked because this test verifies orchestration,
+    not LightGBM itself. Dedicated tests already cover model fitting.
+    """
+
+    df = make_engineered_dataset(periods=100)
+
+    # The first 10 training rows intentionally lack usable demand
+    # history. Production preparation should remove them from training.
+    history_columns = list(DEMAND_HISTORY_FEATURES)
+    df.loc[:9, history_columns] = pd.NA
+
+    poisson_model = object()
+    classifier_model = object()
+
+    # Track whether each training function receives the expected data.
+    calls = {
+        "poisson": False,
+        "classifier": False,
+    }
+
+    def mock_fit_poisson(
+        X_train,
+        y_train,
+        X_validation,
+        y_validation,
+        early_stopping_rounds=50,
+    ):
+        calls["poisson"] = True
+
+        # With 100 total days and two 28-day holdouts, training begins
+        # with 44 rows. Removing 10 incomplete rows leaves 34.
+        assert len(X_train) == 34
+        assert len(y_train) == 34
+        assert len(X_validation) == 28
+        assert len(y_validation) == 28
+        assert early_stopping_rounds == 25
+
+        return poisson_model
+
+    def mock_fit_classifier(
+        X_train,
+        y_train,
+        X_validation,
+        y_validation,
+        early_stopping_rounds=50,
+    ):
+        calls["classifier"] = True
+
+        assert len(X_train) == 34
+        assert len(y_train) == 34
+        assert len(X_validation) == 28
+        assert len(y_validation) == 28
+        assert early_stopping_rounds == 25
+
+        return classifier_model
+
+    monkeypatch.setattr(
+        "src.models.train.fit_poisson_regressor",
+        mock_fit_poisson,
+    )
+
+    monkeypatch.setattr(
+        "src.models.train.fit_demand_classifier",
+        mock_fit_classifier,
+    )
+
+    def mock_create_forecasts(
+        validation_df,
+        X_validation,
+        poisson_model_arg,
+        classifier_model_arg,
+        threshold=0.50,
+    ):
+        # Verify that orchestration passes the trained models and
+        # user-selected threshold into forecast assembly.
+        assert poisson_model_arg is poisson_model
+        assert classifier_model_arg is classifier_model
+        assert threshold == pytest.approx(0.60)
+        assert len(validation_df) == 28
+        assert len(X_validation) == 28
+
+        forecasts = validation_df[
+            ["date", "item_id", "sales", "is_available"]
+        ].copy()
+
+        # Deterministic predictions keep this orchestration test
+        # independent of LightGBM behavior.
+        forecasts["poisson_prediction"] = forecasts["sales"].astype(
+            float
+        )
+        forecasts["positive_demand_probability"] = 1.0
+        forecasts["two_stage_prediction"] = forecasts["sales"].astype(
+            float
+        )
+
+        return forecasts
+
+    monkeypatch.setattr(
+        "src.models.train.create_validation_forecasts",
+        mock_create_forecasts,
+    )
+
+    result = train_and_validate(
+        df,
+        validation_days=28,
+        test_days=28,
+        threshold=0.60,
+        early_stopping_rounds=25,
+    )
+
+    # Both training stages must have been invoked.
+    assert calls["poisson"]
+    assert calls["classifier"]
+
+    # The orchestration result should retain the trained models,
+    # complete chronological splits, forecasts, and metrics.
+    assert result["poisson_model"] is poisson_model
+    assert result["classifier_model"] is classifier_model
+
+    assert len(result["train_df"]) == 34
+    assert len(result["validation_df"]) == 28
+    assert len(result["test_df"]) == 28
+    assert len(result["validation_forecasts"]) == 28
+
+    # Predictions equal actual sales in the mock forecast, so both
+    # strategies should have zero validation error.
+    assert result["validation_metrics"]["poisson"]["MAE"] == pytest.approx(
+        0.0
+    )
+    assert result["validation_metrics"]["two_stage"]["MAE"] == pytest.approx(
+        0.0
+    )
