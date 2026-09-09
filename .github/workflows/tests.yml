@@ -1,0 +1,40 @@
+# Run the automated test suite whenever code is pushed to main
+# or a pull request targets main.
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    # Use a clean Linux environment provided by GitHub Actions.
+    runs-on: ubuntu-latest
+
+    steps:
+      # Download the repository code into the CI environment.
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Install the Python version used to run the project tests.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      # Install the project's Python dependencies.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Run the complete automated test suite.
+      # The tests use synthetic/in-memory data, so the large M5
+      # dataset does not need to be downloaded in CI.
+      - name: Run tests
+        run: python -m pytest -q
