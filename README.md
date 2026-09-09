@@ -577,4 +577,4 @@ Potential extensions include:
 
 Master's graduate in Data Science from Dalarna University, Sweden.
 
-This project was developed as a portfolio demonstration of end-to-end data science and machine learning engineering skills.
+This project demonstrates an end-to-end data science and machine learning workflow, from raw data preparation and exploratory analysis to forecasting, evaluation, production inference, API development, SQL analytics, and automated testing.
