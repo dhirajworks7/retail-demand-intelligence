@@ -11,6 +11,10 @@ The project combines leakage-safe time-series feature engineering, LightGBM fore
 
 An end-to-end retail demand forecasting system built using the Walmart M5 dataset. The project demonstrates a production-oriented data science workflow spanning data preparation, exploratory analysis, leakage-safe feature engineering, machine learning, model evaluation, persistence, inference, REST API development, SQL analytics, and automated testing.
 
+### Model Performance
+
+![Final test WMAPE comparison](assets/model_wmape_comparison.png)
+
 ## Project Overview
 
 Retail demand forecasting is challenging because product demand is intermittent, prices change over time, products are not always available, and demand is influenced by calendar effects, events, and purchasing patterns.
