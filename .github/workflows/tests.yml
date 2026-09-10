@@ -38,3 +38,17 @@ jobs:
       # dataset does not need to be downloaded in CI.
       - name: Run tests
         run: python -m pytest -q
+
+  docker:
+    # Verify that the production container image can be built successfully.
+    runs-on: ubuntu-latest
+
+    steps:
+      # Download the repository code into the CI environment.
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Build the Docker image to catch container-specific dependency
+      # or packaging problems before deployment.
+      - name: Build Docker image
+        run: docker build -t retail-demand-intelligence .
