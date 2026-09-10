@@ -1,0 +1,23 @@
+# Local Python environment.
+.venv/
+__pycache__/
+*.py[cod]
+
+# Git metadata is not needed inside the image.
+.git/
+.github/
+
+# Large local datasets and generated artifacts should not be copied.
+data/raw/
+data/interim/
+data/processed/
+artifacts/
+
+# Notebook and editor-generated files are not required at runtime.
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+# OS-specific files.
+.DS_Store
+Thumbs.db
