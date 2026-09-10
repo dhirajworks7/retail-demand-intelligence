@@ -1,4 +1,5 @@
 # Retail Demand Intelligence
+[![Tests](https://github.com/dhirajworks7/retail-demand-intelligence/actions/workflows/tests.yml/badge.svg)](https://github.com/dhirajworks7/retail-demand-intelligence/actions/workflows/tests.yml)
 
 An end-to-end retail demand forecasting system built using the Walmart M5 dataset. The project demonstrates a production-oriented data science workflow spanning data preparation, exploratory analysis, leakage-safe feature engineering, machine learning, model evaluation, persistence, inference, REST API development, SQL analytics, and automated testing.
 
