@@ -1,6 +1,14 @@
 # Retail Demand Intelligence
 [![Tests](https://github.com/dhirajworks7/retail-demand-intelligence/actions/workflows/tests.yml/badge.svg)](https://github.com/dhirajworks7/retail-demand-intelligence/actions/workflows/tests.yml)
 
+## At a Glance
+
+Built an end-to-end **28-day retail demand forecasting system** on Walmart M5 data covering **3,049 products and 5.9M+ item-day observations**.
+
+The project combines leakage-safe time-series feature engineering, LightGBM forecasting, intermittent-demand modeling, chronological validation, production inference, FastAPI, SQL analytics, automated testing, and GitHub Actions CI.
+
+**Final test performance:** the two-stage LightGBM model achieved **1.1025 MAE** and **70.22% WMAPE**, improving both metrics by **21.82%** over the seasonal-naive baseline.
+
 An end-to-end retail demand forecasting system built using the Walmart M5 dataset. The project demonstrates a production-oriented data science workflow spanning data preparation, exploratory analysis, leakage-safe feature engineering, machine learning, model evaluation, persistence, inference, REST API development, SQL analytics, and automated testing.
 
 ## Project Overview
