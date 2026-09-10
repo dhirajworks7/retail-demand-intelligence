@@ -507,7 +507,8 @@ cd retail-demand-intelligence
 Windows:
 
 ```bash
-python -m venv .venv
+# Python 3.12 is recommended to match the CI environment.
+py -3.12 -m venv .venv
 .venv\Scripts\activate
 ```
 
