@@ -1,5 +1,5 @@
 # Retail Demand Intelligence
-[![Tests](https://github.com/dhirajworks7/retail-demand-intelligence/actions/workflows/tests.yml/badge.svg)](https://github.com/dhirajworks7/retail-demand-intelligence/actions/workflows/tests.yml)
+[![Tests](https://github.com/dhiruvai77/retail-demand-intelligence/actions/workflows/tests.yml/badge.svg)](https://github.com/dhiruvai77/retail-demand-intelligence/actions/workflows/tests.yml)
 
 ## At a Glance
 
@@ -498,7 +498,7 @@ retail-demand-intelligence/
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/dhirajworks7/retail-demand-intelligence.git
+git clone https://github.com/dhiruvai77/retail-demand-intelligence.git
 cd retail-demand-intelligence
 ```
 
