@@ -539,6 +539,42 @@ sell_prices.csv
 ```bash
 python -m pytest -q
 ```
+## Docker
+
+The FastAPI service can also be run in a Docker container, providing a reproducible environment without requiring a local Python setup.
+
+### Build the image
+
+```bash
+docker build -t retail-demand-intelligence .
+```
+
+### Run the container
+
+```bash
+docker run --rm -p 8000:8000 retail-demand-intelligence
+```
+
+The API will be available on port `8000`.
+
+### Check API health
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Example response:
+
+```json
+{
+  "status": "healthy",
+  "model_loaded": false
+}
+```
+
+The Docker image intentionally excludes generated model artifacts. Therefore, the API can start and expose its health endpoint without a persisted model, while the `/forecast` endpoint requires a trained model bundle to be available.
+
+Docker image builds are also validated automatically through the GitHub Actions CI workflow.
 
 ## Technology Stack
 
